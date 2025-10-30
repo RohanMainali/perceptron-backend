@@ -80,7 +80,6 @@ const blogPostSchema = new mongoose.Schema(
   { timestamps: true }
 )
 
-blogPostSchema.index({ slug: 1 }, { unique: true })
 blogPostSchema.index({ publishedAt: -1, createdAt: -1 })
 
 const BlogPost = mongoose.models.BlogPost || mongoose.model('BlogPost', blogPostSchema)

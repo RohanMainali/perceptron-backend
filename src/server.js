@@ -11,7 +11,7 @@ dotenv.config()
 
 const app = express()
 
-const PORT = process.env.PORT || 4000
+const PORT = process.env.PORT || 'https://perceptron-backend-hti4.onrender.com'
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || ADMIN_SECRET_KEY
 const TOKEN_EXPIRY = process.env.TOKEN_EXPIRY || '30m'

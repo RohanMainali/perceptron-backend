@@ -289,6 +289,67 @@ function blogRoutes(server) {
       res.status(500).json({ error: 'Failed to store the blog post.' })
     }
   })
+
+  server.put('/blogs/:slug', verifyToken, async (req, res) => {
+    try {
+      const existingDoc = await BlogPost.findOne({ slug: req.params.slug }).exec()
+      if (!existingDoc) {
+        return res.status(404).json({ error: 'Blog post not found.' })
+      }
+
+      const normalizedSlug = sanitizeSlug(String(req.body?.slug ?? req.body?.title ?? req.params.slug))
+      const payload = { ...req.body, slug: normalizedSlug }
+      const parsed = blogPayloadSchema.safeParse(payload)
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid blog payload.', issues: parsed.error.flatten() })
+      }
+
+      const data = parsed.data
+
+      let publishedAt = existingDoc.publishedAt
+      if (data.date) {
+        const candidate = new Date(data.date)
+        if (!Number.isNaN(candidate.getTime())) {
+          candidate.setUTCHours(0, 0, 0, 0)
+          publishedAt = candidate
+        }
+      }
+
+      existingDoc.slug = data.slug
+      existingDoc.title = data.title.trim()
+      existingDoc.author = (data.author ?? '').trim() || 'Perceptron Team'
+      existingDoc.excerpt = data.excerpt?.trim() || ''
+      existingDoc.image = data.image?.trim() || ''
+      existingDoc.content = data.content.trim()
+      existingDoc.publishedAt = publishedAt
+
+      await existingDoc.save()
+
+      res.json({ slug: existingDoc.slug })
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 11000) {
+        return res.status(409).json({ error: 'A blog post with this slug already exists.' })
+      }
+
+      console.error('Failed to update blog post', error)
+      res.status(500).json({ error: 'Failed to update the blog post.' })
+    }
+  })
+
+  server.delete('/blogs/:slug', verifyToken, async (req, res) => {
+    try {
+      const result = await BlogPost.findOneAndDelete({ slug: req.params.slug }).exec()
+      if (!result) {
+        return res.status(404).json({ error: 'Blog post not found.' })
+      }
+
+      res.json({ deleted: true, slug: req.params.slug })
+    } catch (error) {
+      console.error('Failed to delete blog post', error)
+      res.status(500).json({ error: 'Failed to delete the blog post.' })
+    }
+  })
 }
 
 function defaultHandler(server) {

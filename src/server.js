@@ -493,8 +493,12 @@ function waitlistRoutes(server) {
 
   // Protected — delete a waitlist entry
   server.delete('/waitlist/:id', verifyToken, async (req, res) => {
+    const { id } = req.params
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid id.' })
+    }
     try {
-      const result = await WaitlistEntry.findByIdAndDelete(req.params.id).exec()
+      const result = await WaitlistEntry.findByIdAndDelete(id).exec()
       if (!result) {
         return res.status(404).json({ error: 'Entry not found.' })
       }

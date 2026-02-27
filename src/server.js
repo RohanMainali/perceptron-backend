@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken')
 const dotenv = require('dotenv')
 const mongoose = require('mongoose')
 const { z } = require('zod')
+const { Resend } = require('resend')
 
 dotenv.config()
 
@@ -18,6 +19,10 @@ const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || ADMIN_SECRET_KEY
 const TOKEN_EXPIRY = process.env.TOKEN_EXPIRY || '30m'
 const MONGODB_URI = process.env.MONGODB_URI
+const RESEND_API_KEY = process.env.RESEND_API_KEY
+const FROM_EMAIL = process.env.FROM_EMAIL || 'Auta <noreply@auta.ai>'
+
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null
 
 if (!ADMIN_SECRET_KEY) {
   console.error('Missing ADMIN_SECRET_KEY environment variable.')
@@ -83,6 +88,31 @@ const blogPostSchema = new mongoose.Schema(
 blogPostSchema.index({ publishedAt: -1, createdAt: -1 })
 
 const BlogPost = mongoose.models.BlogPost || mongoose.model('BlogPost', blogPostSchema)
+
+const waitlistSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true },
+    useCase: {
+      type: String,
+      enum: ['Medical', 'Sports', 'Autonomous', 'Other'],
+      default: 'Other',
+    },
+    message: { type: String, default: '', trim: true },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
+    },
+    adminNotes: { type: String, default: '', trim: true },
+  },
+  { timestamps: true }
+)
+
+waitlistSchema.index({ email: 1 })
+waitlistSchema.index({ status: 1, createdAt: -1 })
+
+const WaitlistEntry = mongoose.models.WaitlistEntry || mongoose.model('WaitlistEntry', waitlistSchema)
 
 const buildTokenPayload = () => ({
   scope: ['blog:create'],
@@ -154,6 +184,7 @@ app.get('/health', (_req, res) => {
 
 authRoutes(app)
 blogRoutes(app)
+waitlistRoutes(app)
 defaultHandler(app)
 
 async function connectToDatabase() {
@@ -348,6 +379,133 @@ function blogRoutes(server) {
     } catch (error) {
       console.error('Failed to delete blog post', error)
       res.status(500).json({ error: 'Failed to delete the blog post.' })
+    }
+  })
+}
+
+function waitlistRoutes(server) {
+  const waitlistPayloadSchema = z.object({
+    name: z.string().min(1).max(120),
+    email: z.string().email(),
+    useCase: z.enum(['Medical', 'Sports', 'Autonomous', 'Other']).optional().default('Other'),
+    message: z.string().max(1000).optional().default(''),
+  })
+
+  // Public — submit waitlist signup
+  server.post('/waitlist', async (req, res) => {
+    const parsed = waitlistPayloadSchema.safeParse(req.body || {})
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid payload.', issues: parsed.error.flatten() })
+    }
+
+    try {
+      const existing = await WaitlistEntry.findOne({ email: parsed.data.email }).lean().exec()
+      if (existing) {
+        return res.status(409).json({ error: 'This email is already on the waitlist.' })
+      }
+
+      const entry = new WaitlistEntry({
+        name: parsed.data.name,
+        email: parsed.data.email,
+        useCase: parsed.data.useCase,
+        message: parsed.data.message,
+      })
+      await entry.save()
+      res.status(201).json({ success: true })
+    } catch (error) {
+      console.error('Failed to save waitlist entry', error)
+      res.status(500).json({ error: 'Failed to save your request. Please try again.' })
+    }
+  })
+
+  // Protected — list all waitlist entries
+  server.get('/waitlist', verifyToken, async (req, res) => {
+    try {
+      const { status } = req.query || {}
+      const filter = status && ['pending', 'approved', 'rejected'].includes(status) ? { status } : {}
+      const entries = await WaitlistEntry.find(filter).sort({ createdAt: -1 }).lean().exec()
+      res.json({ entries })
+    } catch (error) {
+      console.error('Failed to list waitlist entries', error)
+      res.status(500).json({ error: 'Failed to fetch waitlist entries.' })
+    }
+  })
+
+  // Protected — update status / adminNotes for an entry
+  server.patch('/waitlist/:id', verifyToken, async (req, res) => {
+    try {
+      const { id } = req.params
+      const { status, adminNotes } = req.body || {}
+
+      const entry = await WaitlistEntry.findById(id).exec()
+      if (!entry) {
+        return res.status(404).json({ error: 'Entry not found.' })
+      }
+
+      const previousStatus = entry.status
+
+      if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+        entry.status = status
+      }
+      if (adminNotes !== undefined) {
+        entry.adminNotes = adminNotes
+      }
+
+      await entry.save()
+
+      // Send approval email if status just flipped to approved
+      if (status === 'approved' && previousStatus !== 'approved') {
+        if (resend) {
+          try {
+            await resend.emails.send({
+              from: FROM_EMAIL,
+              to: entry.email,
+              subject: "You're approved for Auta Private Beta!",
+              html: `
+                <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;background:#0a0f1e;color:#f0f4ff">
+                  <h1 style="font-size:28px;font-weight:700;margin-bottom:8px">Welcome to Auta\'s Private Beta!</h1>
+                  <p style="color:#94a3b8;font-size:16px;margin-bottom:24px">Hey ${entry.name},</p>
+                  <p style="color:#cbd5e1;font-size:15px;line-height:1.6">Great news — your request to join the <strong style="color:#53C5E6">Auta Private Beta</strong> has been approved. You now have access to the platform.</p>
+                  <p style="color:#cbd5e1;font-size:15px;line-height:1.6">Our team will be in touch shortly with your login credentials and onboarding details.</p>
+                  <div style="margin:32px 0">
+                    <a href="https://auta.ai" style="background:linear-gradient(135deg,#2178C7,#53C5E6);color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600;font-size:15px">Get Started with Auta</a>
+                  </div>
+                  <p style="color:#475569;font-size:13px">If you have any questions, reply to this email or contact us at support@auta.ai.</p>
+                  <p style="color:#334155;font-size:12px;margin-top:32px">Perceptron Inc. — Building the future of AI annotation.</p>
+                </div>
+              `,
+            })
+          } catch (emailError) {
+            console.error('Failed to send approval email', emailError)
+            // Non-fatal — entry was already saved
+          }
+        } else {
+          console.warn('RESEND_API_KEY not configured — approval email not sent.')
+        }
+      }
+
+      res.json({ success: true, entry: { _id: entry._id, status: entry.status, adminNotes: entry.adminNotes } })
+    } catch (error) {
+      console.error('Failed to update waitlist entry', error)
+      res.status(500).json({ error: 'Failed to update the entry.' })
+    }
+  })
+
+  // Protected — delete a waitlist entry
+  server.delete('/waitlist/:id', verifyToken, async (req, res) => {
+    const { id } = req.params
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid id.' })
+    }
+    try {
+      const result = await WaitlistEntry.findByIdAndDelete(id).exec()
+      if (!result) {
+        return res.status(404).json({ error: 'Entry not found.' })
+      }
+      res.json({ deleted: true })
+    } catch (error) {
+      console.error('Failed to delete waitlist entry', error)
+      res.status(500).json({ error: 'Failed to delete the entry.' })
     }
   })
 }

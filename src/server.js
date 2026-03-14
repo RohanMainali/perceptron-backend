@@ -12,6 +12,7 @@ const { z } = require('zod')
 const { Resend } = require('resend')
 
 dotenv.config()
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const app = express()
 

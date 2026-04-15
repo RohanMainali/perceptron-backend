@@ -452,125 +452,123 @@ function waitlistRoutes(server) {
 
       const previousStatus = entry.status
 
-      if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+      if (status && ['pending', 'approved', 'rejected'].includes(status) && status !== 'approved') {
         entry.status = status
       }
       if (adminNotes !== undefined) {
         entry.adminNotes = adminNotes
       }
 
-      await entry.save()
-
       // ── Auto-create CVAT account and email credentials ──────────────────
       if (status === 'approved' && previousStatus !== 'approved') {
         if (!CVAT_API_URL || !CVAT_INTERNAL_API_KEY) {
-          console.warn('CVAT_API_URL or CVAT_INTERNAL_API_KEY not configured — skipping account creation.')
-        } else {
-          try {
-            // 1. Generate a secure random password
-            const password = crypto.randomBytes(12).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)
+          throw new Error('CVAT_API_URL or CVAT_INTERNAL_API_KEY is not configured — cannot approve user.')
+        }
 
-            // 2. Derive a base username from the email prefix, keep only alphanumeric + underscores
-            const baseUsername = entry.email
-              .split('@')[0]
-              .toLowerCase()
-              .replace(/[^a-z0-9_]/g, '_')
-              .slice(0, 30)
+        // 1. Generate a secure random password
+        const password = crypto.randomBytes(12).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)
 
-            // 3. Try to create the account, retrying with a numeric suffix on 409 (username taken)
-            let username = null
-            const MAX_ATTEMPTS = 10
-            for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-              const candidate = attempt === 0 ? baseUsername : `${baseUsername}_${attempt}`
-              const resp = await fetch(`${CVAT_API_URL}/api/internal/create-user`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'X-Internal-Api-Key': CVAT_INTERNAL_API_KEY,
-                },
-                body: JSON.stringify({
-                  username: candidate,
-                  email: entry.email,
-                  password,
-                  first_name: (entry.name || '').split(' ')[0] || '',
-                  last_name: (entry.name || '').split(' ').slice(1).join(' ') || '',
-                }),
-              })
+        // 2. Derive a base username from the email prefix, keep only alphanumeric + underscores
+        const baseUsername = entry.email
+          .split('@')[0]
+          .toLowerCase()
+          .replace(/[^a-z0-9_]/g, '_')
+          .slice(0, 30)
 
-              if (resp.status === 201) {
-                username = candidate
-                console.log(`Created CVAT account '${username}' for ${entry.email}`)
-                break
-              } else if (resp.status === 409) {
-                // Username taken — try the next suffix
-                continue
-              } else {
-                const body = await resp.text()
-                throw new Error(`CVAT API returned ${resp.status}: ${body}`)
-              }
-            }
+        // 3. Try to create the account, retrying with a numeric suffix on 409 (username taken)
+        let username = null
+        const MAX_ATTEMPTS = 10
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const candidate = attempt === 0 ? baseUsername : `${baseUsername}_${attempt}`
+          const resp = await fetch(`${CVAT_API_URL}/api/internal/create-user`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Internal-Api-Key': CVAT_INTERNAL_API_KEY,
+            },
+            body: JSON.stringify({
+              username: candidate,
+              email: entry.email,
+              password,
+              first_name: (entry.name || '').split(' ')[0] || '',
+              last_name: (entry.name || '').split(' ').slice(1).join(' ') || '',
+            }),
+          })
 
-            if (!username) {
-              throw new Error(`Could not find a unique username after ${MAX_ATTEMPTS} attempts for ${entry.email}`)
-            }
-
-            // 4. Send the welcome email with credentials
-            if (resend) {
-              await resend.emails.send({
-                from: FROM_EMAIL,
-                to: entry.email,
-                subject: "Your Perceptron account is ready!",
-                html: `
-                  <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;background:#0a0f1e;color:#f0f4ff">
-                    <h1 style="font-size:26px;font-weight:700;margin-bottom:8px">Welcome to Perceptron!</h1>
-                    <p style="color:#94a3b8;font-size:16px;margin-bottom:24px">Hey ${entry.name},</p>
-                    <p style="color:#cbd5e1;font-size:15px;line-height:1.6">Your access to the <strong style="color:#53C5E6">Perceptron Private Beta</strong> has been approved. Your account is ready to use.</p>
-
-                    <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:24px;margin:28px 0">
-                      <p style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 16px">Your login credentials</p>
-                      <table style="width:100%;border-collapse:collapse">
-                        <tr>
-                          <td style="color:#94a3b8;font-size:14px;padding:6px 0;width:110px">Login URL</td>
-                          <td style="color:#f1f5f9;font-size:14px;padding:6px 0"><a href="${CVAT_PUBLIC_URL}/auth/login" style="color:#53C5E6;text-decoration:none">${CVAT_PUBLIC_URL}/auth/login</a></td>
-                        </tr>
-                        <tr>
-                          <td style="color:#94a3b8;font-size:14px;padding:6px 0">Username</td>
-                          <td style="color:#f1f5f9;font-size:14px;padding:6px 0;font-family:monospace">${username}</td>
-                        </tr>
-                        <tr>
-                          <td style="color:#94a3b8;font-size:14px;padding:6px 0">Password</td>
-                          <td style="color:#f1f5f9;font-size:14px;padding:6px 0;font-family:monospace">${password}</td>
-                        </tr>
-                      </table>
-                    </div>
-
-                    <p style="color:#94a3b8;font-size:14px;line-height:1.6">For security, please change your password after your first login via <strong>Profile → Change password</strong>.</p>
-
-                    <div style="margin:32px 0">
-                      <a href="${CVAT_PUBLIC_URL}/auth/login" style="background:linear-gradient(135deg,#2178C7,#53C5E6);color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600;font-size:15px">Log in to Perceptron</a>
-                    </div>
-
-                    <p style="color:#475569;font-size:13px">If you have any questions, reply to this email or contact us at support@perceptronai.org.</p>
-                    <p style="color:#334155;font-size:12px;margin-top:32px">Perceptron Inc. — Building the future of AI annotation.</p>
-                  </div>
-                `,
-              })
-              console.log(`Sent credentials email to ${entry.email}`)
-            } else {
-              console.warn('RESEND_API_KEY not configured — credentials email not sent.')
-            }
-          } catch (accountError) {
-            console.error('Failed to create CVAT account or send credentials email:', accountError)
-            // Non-fatal — the waitlist entry is already saved as approved.
-            // Admin should be notified to create the account manually.
+          if (resp.status === 201) {
+            username = candidate
+            console.log(`Created CVAT account '${username}' for ${entry.email}`)
+            break
+          } else if (resp.status === 409) {
+            // Username taken — try the next suffix
+            continue
+          } else {
+            const body = await resp.text()
+            throw new Error(`CVAT API returned ${resp.status}: ${body}`)
           }
         }
+
+        if (!username) {
+          throw new Error(`Could not find a unique username after ${MAX_ATTEMPTS} attempts for ${entry.email}`)
+        }
+
+        // 4. Send the welcome email with credentials
+        if (resend) {
+          await resend.emails.send({
+            from: FROM_EMAIL,
+            to: entry.email,
+            subject: "Your Perceptron account is ready!",
+            html: `
+              <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;background:#0a0f1e;color:#f0f4ff">
+                <h1 style="font-size:26px;font-weight:700;margin-bottom:8px">Welcome to Perceptron!</h1>
+                <p style="color:#94a3b8;font-size:16px;margin-bottom:24px">Hey ${entry.name},</p>
+                <p style="color:#cbd5e1;font-size:15px;line-height:1.6">Your access to the <strong style="color:#53C5E6">Perceptron Private Beta</strong> has been approved. Your account is ready to use.</p>
+
+                <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:24px;margin:28px 0">
+                  <p style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 16px">Your login credentials</p>
+                  <table style="width:100%;border-collapse:collapse">
+                    <tr>
+                      <td style="color:#94a3b8;font-size:14px;padding:6px 0;width:110px">Login URL</td>
+                      <td style="color:#f1f5f9;font-size:14px;padding:6px 0"><a href="${CVAT_PUBLIC_URL}/auth/login" style="color:#53C5E6;text-decoration:none">${CVAT_PUBLIC_URL}/auth/login</a></td>
+                    </tr>
+                    <tr>
+                      <td style="color:#94a3b8;font-size:14px;padding:6px 0">Username</td>
+                      <td style="color:#f1f5f9;font-size:14px;padding:6px 0;font-family:monospace">${username}</td>
+                    </tr>
+                    <tr>
+                      <td style="color:#94a3b8;font-size:14px;padding:6px 0">Password</td>
+                      <td style="color:#f1f5f9;font-size:14px;padding:6px 0;font-family:monospace">${password}</td>
+                    </tr>
+                  </table>
+                </div>
+
+                <p style="color:#94a3b8;font-size:14px;line-height:1.6">For security, please change your password after your first login via <strong>Profile → Change password</strong>.</p>
+
+                <div style="margin:32px 0">
+                  <a href="${CVAT_PUBLIC_URL}/auth/login" style="background:linear-gradient(135deg,#2178C7,#53C5E6);color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600;font-size:15px">Log in to Perceptron</a>
+                </div>
+
+                <p style="color:#475569;font-size:13px">If you have any questions, reply to this email or contact us at support@perceptronai.org.</p>
+                <p style="color:#334155;font-size:12px;margin-top:32px">Perceptron Inc. — Building the future of AI annotation.</p>
+              </div>
+            `,
+          })
+          console.log(`Sent credentials email to ${entry.email}`)
+        } else {
+          console.warn('RESEND_API_KEY not configured — credentials email not sent.')
+        }
+
+        // All steps succeeded — mark as approved and persist
+        entry.status = 'approved'
+        await entry.save()
+      } else {
+        await entry.save()
       }
 
       res.json({ success: true, entry: { _id: entry._id, status: entry.status, adminNotes: entry.adminNotes } })
     } catch (error) {
       console.error('Failed to update waitlist entry', error)
-      res.status(500).json({ error: 'Failed to update the entry.' })
+      res.status(500).json({ error: error.message || 'Failed to update the entry.' })
     }
   })
 

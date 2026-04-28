@@ -122,6 +122,26 @@ waitlistSchema.index({ status: 1, createdAt: -1 })
 
 const WaitlistEntry = mongoose.models.WaitlistEntry || mongoose.model('WaitlistEntry', waitlistSchema)
 
+const contactSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true },
+    projectType: { type: String, default: '', trim: true },
+    message: { type: String, required: true, trim: true },
+    status: {
+      type: String,
+      enum: ['unread', 'read', 'archived'],
+      default: 'unread',
+    },
+    adminNotes: { type: String, default: '', trim: true },
+  },
+  { timestamps: true }
+)
+
+contactSchema.index({ status: 1, createdAt: -1 })
+
+const ContactSubmission = mongoose.models.ContactSubmission || mongoose.model('ContactSubmission', contactSchema)
+
 const buildTokenPayload = () => ({
   scope: ['blog:create'],
   issuedAt: Date.now(),
@@ -193,6 +213,7 @@ app.get('/health', (_req, res) => {
 authRoutes(app)
 blogRoutes(app)
 waitlistRoutes(app)
+contactRoutes(app)
 defaultHandler(app)
 
 async function connectToDatabase() {
@@ -587,6 +608,122 @@ function waitlistRoutes(server) {
     } catch (error) {
       console.error('Failed to delete waitlist entry', error)
       res.status(500).json({ error: 'Failed to delete the entry.' })
+    }
+  })
+}
+
+function contactRoutes(server) {
+  const CONTACT_NOTIFY_EMAIL = process.env.CONTACT_NOTIFY_EMAIL || 'support@perceptronai.org'
+
+  const contactPayloadSchema = z.object({
+    name: z.string().min(1).max(120),
+    email: z.string().email(),
+    projectType: z.string().max(80).optional().default(''),
+    message: z.string().min(1).max(2000),
+  })
+
+  // Public — submit contact form
+  server.post('/contact', async (req, res) => {
+    const parsed = contactPayloadSchema.safeParse(req.body || {})
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid payload.', issues: parsed.error.flatten() })
+    }
+
+    try {
+      const submission = new ContactSubmission({
+        name: parsed.data.name,
+        email: parsed.data.email,
+        projectType: parsed.data.projectType,
+        message: parsed.data.message,
+      })
+      await submission.save()
+
+      if (resend) {
+        resend.emails.send({
+          from: FROM_EMAIL,
+          to: CONTACT_NOTIFY_EMAIL,
+          subject: `New contact: ${parsed.data.name} — ${parsed.data.projectType || 'General Inquiry'}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;background:#0a0f1e;color:#f0f4ff">
+              <h1 style="font-size:22px;font-weight:700;margin-bottom:20px">New Contact Form Submission</h1>
+              <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:24px;margin-bottom:20px">
+                <table style="width:100%;border-collapse:collapse">
+                  <tr><td style="color:#94a3b8;font-size:13px;padding:6px 0;width:120px">Name</td><td style="color:#f1f5f9;font-size:14px;padding:6px 0">${parsed.data.name}</td></tr>
+                  <tr><td style="color:#94a3b8;font-size:13px;padding:6px 0">Email</td><td style="font-size:14px;padding:6px 0"><a href="mailto:${parsed.data.email}" style="color:#53C5E6">${parsed.data.email}</a></td></tr>
+                  <tr><td style="color:#94a3b8;font-size:13px;padding:6px 0">Project Type</td><td style="color:#f1f5f9;font-size:14px;padding:6px 0">${parsed.data.projectType || '—'}</td></tr>
+                </table>
+              </div>
+              <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:24px">
+                <p style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 12px">Message</p>
+                <p style="color:#cbd5e1;font-size:14px;line-height:1.7;white-space:pre-wrap">${parsed.data.message}</p>
+              </div>
+              <p style="color:#475569;font-size:12px;margin-top:24px">View in <a href="https://perceptronai.org/admin/contact" style="color:#53C5E6">admin dashboard</a>.</p>
+            </div>
+          `,
+        }).catch(err => console.error('Failed to send contact notification email', err))
+      }
+
+      res.status(201).json({ success: true })
+    } catch (error) {
+      console.error('Failed to save contact submission', error)
+      res.status(500).json({ error: 'Failed to save your message. Please try again.' })
+    }
+  })
+
+  // Protected — list all contact submissions
+  server.get('/contact', verifyToken, async (req, res) => {
+    try {
+      const { status } = req.query || {}
+      const filter = status && ['unread', 'read', 'archived'].includes(status) ? { status } : {}
+      const submissions = await ContactSubmission.find(filter).sort({ createdAt: -1 }).lean().exec()
+      res.json({ submissions })
+    } catch (error) {
+      console.error('Failed to list contact submissions', error)
+      res.status(500).json({ error: 'Failed to fetch contact submissions.' })
+    }
+  })
+
+  // Protected — update status / adminNotes
+  server.patch('/contact/:id', verifyToken, async (req, res) => {
+    try {
+      const { id } = req.params
+      const { status, adminNotes } = req.body || {}
+
+      const submission = await ContactSubmission.findById(id).exec()
+      if (!submission) {
+        return res.status(404).json({ error: 'Submission not found.' })
+      }
+
+      if (status && ['unread', 'read', 'archived'].includes(status)) {
+        submission.status = status
+      }
+      if (adminNotes !== undefined) {
+        submission.adminNotes = adminNotes
+      }
+
+      await submission.save()
+      res.json({ success: true, submission: { _id: submission._id, status: submission.status, adminNotes: submission.adminNotes } })
+    } catch (error) {
+      console.error('Failed to update contact submission', error)
+      res.status(500).json({ error: 'Failed to update the submission.' })
+    }
+  })
+
+  // Protected — delete a submission
+  server.delete('/contact/:id', verifyToken, async (req, res) => {
+    const { id } = req.params
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid id.' })
+    }
+    try {
+      const result = await ContactSubmission.findByIdAndDelete(id).exec()
+      if (!result) {
+        return res.status(404).json({ error: 'Submission not found.' })
+      }
+      res.json({ deleted: true })
+    } catch (error) {
+      console.error('Failed to delete contact submission', error)
+      res.status(500).json({ error: 'Failed to delete the submission.' })
     }
   })
 }

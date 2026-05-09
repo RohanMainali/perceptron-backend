@@ -5,6 +5,7 @@
   "private": true,
   "main": "src/server.js",
   "scripts": {
+    "check": "node --check src/server.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js"
   },

@@ -29,6 +29,15 @@ This service provides authentication and content APIs for the blog authoring exp
 
 ## Deployment
 
-1. Install dependencies: `npm install` inside the `backend` folder.
-2. Provide the environment variables above in your hosting provider.
-3. Expose the service publicly and set both `BACKEND_SERVICE_URL` (server-only) and `NEXT_PUBLIC_AUTH_SERVICE_URL` (client-side) in the Next.js app to point to it.
+Infrastructure lives in `infra/terraform` and provisions ECR, ECS/Fargate, an ALB, Secrets Manager placeholders, and an OIDC deploy role for GitHub Actions.
+
+1. Set `github_repo` in `infra/terraform/terraform.tfvars` to the GitHub repository in `owner/repo` form.
+2. Apply Terraform from `infra/terraform`.
+3. Populate the Secrets Manager values shown by `terraform output secret_arns`.
+4. Add the Terraform output `github_deploy_role_arn` as the GitHub repository secret `AWS_DEPLOY_ROLE_ARN`.
+5. Optional: add the GitHub repository variable `PRODUCTION_HEALTHCHECK_URL` with the full health endpoint, for example `https://api.example.com/health`.
+6. Push to `main` or run the `Deploy to Amazon ECS` workflow manually.
+
+The `CI` workflow validates pull requests and `main` pushes with `npm ci`, `npm run check`, and a Docker image build. The deploy workflow repeats the app validation, builds and pushes a SHA-tagged image plus `latest` to ECR, updates the existing ECS task definition image, and waits for the ECS service to stabilize.
+
+Terraform state is currently local. Move it to the commented S3 backend in `infra/terraform/main.tf` before automating Terraform applies from CI.

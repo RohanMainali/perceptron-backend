@@ -1,0 +1,24 @@
+aws_region   = "us-east-1"
+project_name = "perceptron"
+environment  = "production"
+
+container_port = 4000
+task_cpu       = "256"    # 0.25 vCPU — bump to "512" if you see CPU throttling
+task_memory    = "512"    # MiB
+desired_count  = 1
+min_capacity   = 1
+max_capacity   = 4
+
+# Non-sensitive app config
+allowed_origins      = "https://perceptronai.org,https://www.perceptronai.org"
+from_email           = "Perceptron <noreply@perceptronai.org>"
+cvat_api_url         = "https://cvat.perceptronai.org"
+cvat_public_url      = "https://cvat.perceptronai.org"
+contact_notify_email = "support@perceptronai.org"
+token_expiry         = "30m"
+
+# GitHub OIDC — set to your repo to enable keyless CI/CD
+github_repo = "your-org/percepton-backend"
+
+# TLS — add your ACM certificate ARN to enable HTTPS
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"

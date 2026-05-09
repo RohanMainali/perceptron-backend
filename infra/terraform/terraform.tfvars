@@ -19,5 +19,4 @@ token_expiry         = "30m"
 # Set to your GitHub repo to enable keyless OIDC CI/CD
 github_repo = "RohanMainali/perceptron-backend"
 
-# Uncomment once you have an ACM certificate for your domain
-# certificate_arn = ""
+certificate_arn = "arn:aws:acm:us-east-1:832613171637:certificate/5167a75d-c0bf-4774-87bf-f9c60af1be07"
